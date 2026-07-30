@@ -2,7 +2,7 @@ QRing Dashboard parses the .noedata Android backup file from the QRing app (Bliv
 
 Tested with QRing app version 1.0.1.131 and Blivas ring firmware 2.00.27 — other versions may use a different database schema.
 
-How to get the .noedata file (Samsung):
+**How to get the .noedata file (Samsung):**
 
 ▎ 1. Install Samsung Smart Switch on a PC and connect your phone via USB.
 
