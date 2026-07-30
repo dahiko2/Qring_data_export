@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QRing Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+  // Ставим тему ещё до отрисовки страницы, чтобы не было "мигания" неправильной темой
+  (function(){
+    var saved = localStorage.getItem('qring-theme');
+    var theme = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    document.documentElement.setAttribute('data-theme', theme);
+  })();
+</script>
+<style>
+  :root{
+    /* светлая тема — референс: пастельный градиент, белые "плавающие" карточки */
+    --bg1:#f5ecff; --bg2:#ffe9f4; --bg3:#eaf0ff;
+    --card:rgba(255,255,255,0.82); --card-border:rgba(124,77,255,0.14);
+    --text:#2b2540; --muted:#8a84a8; --border:rgba(124,77,255,0.16);
+    --accent:#7c4dff; --accent2:#b197fc;
+    --card-shadow:0 12px 32px rgba(124,77,255,0.12);
+    --switch-track:#efe7ff;
+    --steps:#4c6ef5; --steps2:#7b61ff; --miles:#12b886; --miles2:#20c997; --cal:#fd7e14; --cal2:#ffa94d;
+    --deep:#2b3a67; --light:#5b7fdb; --rem:#9775fa; --awake:#f06a6a;
+    --spo2:#12b886; --temp:#e8590c;
+  }
+  :root[data-theme="dark"]{
+    /* тёмная тема — референс: глубокий индиго/фиолетовый, glassmorphism-карточки */
+    --bg1:#0a0e27; --bg2:#161034; --bg3:#241a4d;
+    --card:rgba(30,26,64,0.55); --card-border:rgba(255,255,255,0.08);
+    --text:#eef0ff; --muted:#a29dcf; --border:rgba(255,255,255,0.09);
+    --accent:#7b61ff; --accent2:#9775fa;
+    --card-shadow:0 20px 50px rgba(60,20,170,0.35);
+    --switch-track:#231e4a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    background:linear-gradient(135deg, var(--bg1), var(--bg2) 55%, var(--bg3));
+    background-attachment:fixed; min-height:100vh; transition:background .3s ease, color .3s ease;
+  }
+  header{padding:24px 24px 8px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;}
+  h1{font-size:22px;margin:0 0 4px;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .sub{color:var(--muted);font-size:13px;max-width:640px;}
+
+  /* переключатель темы */
+  .theme-switch{position:relative;width:60px;height:32px;min-width:60px;border-radius:20px;border:1px solid var(--border);background:var(--switch-track);cursor:pointer;padding:0;transition:background .25s ease;}
+  .theme-switch .ts-icon{position:absolute;top:50%;transform:translateY(-50%);font-size:13px;line-height:1;}
+  .theme-switch .ts-sun{left:7px;}
+  .theme-switch .ts-moon{right:7px;}
+  .theme-switch .ts-thumb{position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;
+    background:linear-gradient(135deg,#ffd166,#fd7e14); box-shadow:0 2px 8px rgba(0,0,0,0.25);
+    transition:transform .25s ease, background .25s ease;}
+  :root[data-theme="dark"] .theme-switch .ts-thumb{transform:translateX(28px);background:linear-gradient(135deg,#4c6ef5,#7b61ff);}
+
+  .panel{margin:0 24px 16px;border-radius:18px;background:var(--card);border:1px solid var(--card-border);
+    box-shadow:var(--card-shadow);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}
+  .upload-bar{display:flex;gap:12px;align-items:center;padding:16px 20px;flex-wrap:wrap;}
+  .upload-bar input[type=file]{color:var(--text);font-size:13px;}
+  /* кастомная кнопка "Browse..." нативного file-инпута под стиль дашборда */
+  input[type=file]::file-selector-button{
+    background:linear-gradient(90deg,var(--accent),var(--accent2)); color:#fff; border:none;
+    padding:8px 16px; border-radius:10px; font-size:13px; cursor:pointer; margin-right:12px;
+    transition:filter .15s ease, transform .15s ease;
+  }
+  input[type=file]::file-selector-button:hover{ filter:brightness(1.08); transform:translateY(-1px); }
+  #status{font-size:13px;color:var(--muted);}
+  .filter-bar{position:sticky;top:12px;z-index:10;padding:12px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;}
+  .btn{border:1px solid var(--border);background:transparent;color:var(--text);padding:7px 14px;border-radius:10px;cursor:pointer;font-size:13px;transition:all .15s ease;}
+  .btn.active{background:linear-gradient(90deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;}
+  .btn:hover{filter:brightness(1.05);transform:translateY(-1px);}
+  .btn-primary{background:linear-gradient(90deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;
+    box-shadow:0 6px 16px rgba(124,77,255,0.28);}
+  .btn-primary:hover{filter:brightness(1.08);transform:translateY(-1px);}
+  .nav-btn{padding:7px 10px;font-weight:bold;}
+  input[type=date]{border:1px solid var(--border);background:transparent;color:var(--text);padding:6px 8px;border-radius:8px;font-size:13px;}
+  .period-label{font-weight:600;margin-left:8px;}
+
+  /* кастомный степпер для числового поля (часовой пояс) — прячем нативные стрелки */
+  .stepper{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  .stepper button{border:none;background:transparent;color:var(--text);width:26px;height:30px;cursor:pointer;
+    font-size:14px;line-height:1;display:flex;align-items:center;justify-content:center;transition:background .15s ease;}
+  .stepper button:hover{background:linear-gradient(90deg,var(--accent),var(--accent2));color:#fff;}
+  .stepper input[type=number]{border:none;background:transparent;color:var(--text);width:38px;text-align:center;
+    font-size:13px;padding:6px 0;-moz-appearance:textfield;}
+  .stepper input[type=number]::-webkit-outer-spin-button,
+  .stepper input[type=number]::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+  .range-info{padding:4px 24px 14px;font-size:13px;color:var(--muted);}
+  main{padding:8px 24px 40px;display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px;}
+  .card{background:var(--card);border:1px solid var(--card-border);border-radius:20px;padding:20px;
+    box-shadow:var(--card-shadow);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}
+  .card h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px;}
+  .gauge-row{display:flex;gap:16px;}
+  .triple-stats{display:flex;justify-content:space-around;text-align:center;margin-top:6px;gap:8px;flex-wrap:wrap;}
+  .ts-col{flex:1;min-width:100px;}
+  .ts-label{font-size:13px;font-weight:600;opacity:0.9;}
+  .ts-value{font-size:26px;font-weight:700;color:var(--text);line-height:1.2;}
+  .ts-goal{font-size:12px;color:var(--muted);margin-bottom:6px;}
+  .ts-mam{font-size:11px;color:var(--muted);}
+  .stat-row{display:flex;justify-content:space-around;margin-top:10px;font-size:12px;color:var(--muted);}
+  .stat-row b{display:block;font-size:16px;color:var(--text);font-weight:600;}
+  .full{grid-column:1/-1;}
+  .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap;margin-top:8px;}
+  .legend span{display:inline-flex;align-items:center;gap:5px;}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}
+  #err{color:#e03131;font-size:13px;padding:0 24px;white-space:pre-wrap;}
+  .empty{color:var(--muted);font-size:13px;text-align:center;padding:20px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>QRing Dashboard</h1>
+    <div class="sub">Локальный просмотр данных из бэкапа кольца Blivas/QRing (.noedata). Файл обрабатывается полностью в браузере, никуда не отправляется.</div>
+  </div>
+  <button id="themeToggle" class="theme-switch" aria-label="Переключить тему" title="Светлая / тёмная тема">
+    <span class="ts-icon ts-sun">☀️</span>
+    <span class="ts-icon ts-moon">🌙</span>
+    <span class="ts-thumb"></span>
+  </button>
+</header>
+
+<div class="panel upload-bar">
+  <input type="file" id="fileInput" accept=".noedata,.ab">
+  <div id="status">Выберите файл .noedata из бэкапа Smart Switch</div>
+  <span style="flex:1;"></span>
+  <label style="font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px;"
+    title="Часовой пояс ВАШЕГО ТЕЛЕФОНА, а не этого компьютера — время в базе хранится в UTC">
+    Часовой пояс: UTC
+    <span class="stepper">
+      <button type="button" id="tzMinus" aria-label="Уменьшить">−</button>
+      <input type="number" id="tzOffset" value="5" step="1">
+      <button type="button" id="tzPlus" aria-label="Увеличить">+</button>
+    </span>
+  </label>
+  <button class="btn btn-primary" id="exportBtn" style="display:none;" title="Выгружает данные за текущий выбранный период (День/Месяц/Год/Диапазон)">📥 Экспорт в Excel</button>
+</div>
+
+<div id="err"></div>
+
+<div class="panel filter-bar" id="filterBar" style="display:none;">
+  <button class="btn" data-mode="day">День</button>
+  <button class="btn" data-mode="month">Месяц</button>
+  <button class="btn" data-mode="year">Год</button>
+  <span style="width:1px;height:20px;background:var(--border);"></span>
+  <span style="font-size:13px;color:var(--muted);">Диапазон:</span>
+  <input type="date" id="customStart">
+  <span>—</span>
+  <input type="date" id="customEnd">
+  <button class="btn" id="applyCustom">Применить</button>
+  <span style="flex:1;"></span>
+  <button class="btn nav-btn" id="prevBtn">◀</button>
+  <span class="period-label" id="periodLabel"></span>
+  <button class="btn nav-btn" id="nextBtn">▶</button>
+</div>
+
+<div class="range-info" id="rangeInfo" style="display:none;"></div>
+
+<main id="main" style="display:none;">
+
+  <div class="card">
+    <h2>🚶 Активность</h2>
+    <svg id="tripleGauge" viewBox="0 0 300 160" width="100%" style="max-width:420px;display:block;margin:0 auto;"></svg>
+    <div class="triple-stats">
+      <div class="ts-col" style="color:var(--steps)">
+        <div class="ts-label">Шаги</div>
+        <div class="ts-value" id="valSteps"></div>
+        <div class="ts-goal" id="goalSteps"></div>
+        <div class="ts-mam" id="statSteps"></div>
+      </div>
+      <div class="ts-col" style="color:var(--miles)">
+        <div class="ts-label">Дистанция</div>
+        <div class="ts-value" id="valKm"></div>
+        <div class="ts-goal" id="goalKm"></div>
+        <div class="ts-mam" id="statMiles"></div>
+      </div>
+      <div class="ts-col" style="color:var(--cal)">
+        <div class="ts-label">Калории</div>
+        <div class="ts-value" id="valCal"></div>
+        <div class="ts-goal" id="goalCal"></div>
+        <div class="ts-mam" id="statCal"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🩸 Кислород в крови (SpO2)</h2>
+    <div id="spo2ChartWrap"></div>
+    <div class="stat-row" id="statSpo2"></div>
+  </div>
+
+  <div class="card">
+    <h2>🌡️ Температура тела</h2>
+    <div id="tempChartWrap"></div>
+    <div class="stat-row" id="statTemp"></div>
+  </div>
+
+  <div class="card full">
+    <h2>😴 Сон</h2>
+    <div id="sleepChartWrap"></div>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--awake)"></i>Пробуждение</span>
+      <span><i class="dot" style="background:var(--rem)"></i>REM</span>
+      <span><i class="dot" style="background:var(--light)"></i>Лёгкий</span>
+      <span><i class="dot" style="background:var(--deep)"></i>Глубокий</span>
+    </div>
+    <div class="stat-row" id="statSleep"></div>
+  </div>
+
+</main>
+
+<script>
+// ---------------------------------------------------------------------------
+// 1. Разбор Android Backup (.noedata) -> tar -> файлы
+// ---------------------------------------------------------------------------
+function stripBackupHeader(bytes){
+  let nl = 0, i = 0;
+  for(; i < bytes.length; i++){
+    if(bytes[i] === 0x0A){ nl++; if(nl === 4){ i++; break; } }
+  }
+  const headerText = new TextDecoder().decode(bytes.slice(0, i));
+  const lines = headerText.trim().split('\n');
+  const magic = lines[0], version = lines[1], compressed = lines[2], enc = lines[3];
+  if(magic !== 'ANDROID BACKUP'){
+    throw new Error('Файл не похож на Android Backup (.noedata/.ab): неверная сигнатура заголовка.');
+  }
+  if(enc && enc.toLowerCase() !== 'none'){
+    throw new Error('Бэкап зашифрован (' + enc + ') — расшифровка не поддерживается этим инструментом.');
+  }
+  let rest = bytes.slice(i);
+  if(compressed === '1'){
+    rest = pako.inflate(rest);
+  }
+  return rest;
+}
+
+function parseTar(bytes){
+  const files = {};
+  const dec = new TextDecoder();
+  let offset = 0;
+  while(offset + 512 <= bytes.length){
+    const header = bytes.slice(offset, offset + 512);
+    let allZero = true;
+    for(let k=0;k<512;k++){ if(header[k] !== 0){ allZero = false; break; } }
+    if(allZero) break;
+    let name = dec.decode(header.slice(0,100));
+    const nul = name.indexOf('\0'); if(nul >= 0) name = name.slice(0, nul);
+    let sizeStr = dec.decode(header.slice(124,136));
+    const nul2 = sizeStr.indexOf('\0'); if(nul2 >= 0) sizeStr = sizeStr.slice(0, nul2);
+    const size = parseInt(sizeStr.trim(), 8) || 0;
+    const typeFlag = String.fromCharCode(header[156]);
+    offset += 512;
+    if(name && typeFlag !== '5'){
+      files[name] = bytes.slice(offset, offset + size);
+    }
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+// ---------------------------------------------------------------------------
+// 2. Загрузка SQLite и извлечение данных
+// ---------------------------------------------------------------------------
+let DB = null;
+
+function q(sql){
+  const res = DB.exec(sql);
+  if(!res.length) return [];
+  const {columns, values} = res[0];
+  return values.map(row => Object.fromEntries(row.map((v,i)=>[columns[i], v])));
+}
+
+function dayStart(dateStr){ return new Date(dateStr + 'T00:00:00Z'); }
+
+// Явные hex-цвета для использования внутри SVG (var() в presentation-атрибутах SVG
+// поддерживается не во всех браузерах надёжно) — синхронизированы с палитрой в CSS.
+// steps2/miles2/cal2 — вторые точки градиента для колец гейджей (как в референс-дашбордах).
+const COLORS = { steps:'#4c6ef5', steps2:'#7b61ff', miles:'#12b886', miles2:'#20c997', cal:'#fd7e14', cal2:'#ffa94d',
+  deep:'#2b3a67', light:'#5b7fdb', rem:'#9775fa', awake:'#f06a6a',
+  spo2:'#12b886', temp:'#e8590c' };
+function isDarkTheme(){ return document.documentElement.getAttribute('data-theme') === 'dark'; }
+function themeColor(name){
+  const light = {border:'#e5e9f2', text:'#2b2540', muted:'#8a84a8'};
+  const dark  = {border:'#3a3564', text:'#eef0ff', muted:'#a29dcf'};
+  return (isDarkTheme() ? dark : light)[name];
+}
+
+let DATA = {steps:[], stepsIntraday:[], sleep:[], sleepSegByDate:{}, heart:[], spo2:[], hrv:[], temp:[]};
+let RANGE = {min:null, max:null};
+
+function loadAllData(){
+  DATA.steps = q("SELECT date_str as date, step as steps, distance, calorie FROM step_total ORDER BY date_str");
+  DATA.sleep = q("SELECT date_str as date, total_sleep, deep_sleep, light_sleep, rapid_sleep, awake, avg_heart, avg_blood_oxygen, avg_hrv, start_time, end_time FROM sleep_total ORDER BY date_str");
+
+  // сегменты сна по дате (для гипнограммы одного дня)
+  const protoRows = q("SELECT date_str as date, st, et, detail FROM sleep_new_protocol");
+  DATA.sleepSegByDate = {};
+  for(const r of protoRows){
+    try{
+      const segs = JSON.parse(r.detail);
+      DATA.sleepSegByDate[r.date] = {st:r.st, et:r.et, segs};
+    }catch(e){}
+  }
+
+  // spo2: часовые значения
+  DATA.spo2 = [];
+  for(const r of q("SELECT date_str as date, min_array FROM blood_oxygen")){
+    const vals = r.min_array.replace(/[\[\]]/g,'').split(',');
+    const base = dayStart(r.date);
+    vals.forEach((v,h)=>{
+      v = v.trim();
+      if(v === '' || v === '0') return;
+      const ts = new Date(base.getTime() + h*3600*1000);
+      DATA.spo2.push({ts, date:r.date, value: +v});
+    });
+  }
+
+  // температура: точечные замеры. ВАЖНО: unix_time в этой таблице — время СИНХРОНИЗАЦИИ
+  // (одинаковое для всех записей за день), а не время самого замера! Реальное время
+  // замера — date_str + min минут (min шёл с шагом 30 минут от начала суток).
+  DATA.temp = [];
+  for(const r of q("SELECT date_str as date, min, temperature FROM temperature_entity")){
+    if(r.temperature === 20) continue; // служебное "нет сигнала"
+    const ts = new Date(dayStart(r.date).getTime() + r.min*60000);
+    DATA.temp.push({ts, date:r.date, value:r.temperature});
+  }
+
+  // пульс: значения каждые interval минут (обычно 5)
+  DATA.heart = [];
+  for(const r of q("SELECT date_str as date, interval, value FROM heart_rate_detail")){
+    const vals = r.value.split(',');
+    const base = dayStart(r.date);
+    vals.forEach((v,i)=>{
+      v = v.trim();
+      if(v === '' || v === '0') return;
+      const ts = new Date(base.getTime() + i*r.interval*60000);
+      DATA.heart.push({ts, date:r.date, value:+v});
+    });
+  }
+
+  // HRV: значения каждые interval минут (обычно 30)
+  DATA.hrv = [];
+  for(const r of q("SELECT date_str as date, interval, value FROM hrv_detail")){
+    const vals = r.value.split(',');
+    const base = dayStart(r.date);
+    vals.forEach((v,i)=>{
+      v = v.trim();
+      if(v === '' || v === '0') return;
+      const ts = new Date(base.getTime() + i*r.interval*60000);
+      DATA.hrv.push({ts, date:r.date, value:+v});
+    });
+  }
+
+  // шаги внутри дня: блоки по interval секунд (обычно 900 = 15 мин)
+  DATA.stepsIntraday = [];
+  for(const r of q("SELECT date_str as date, interval, counts FROM step_detail")){
+    const vals = r.counts.split(',');
+    const base = dayStart(r.date);
+    vals.forEach((v,i)=>{
+      v = v.trim();
+      if(v === '' || v === '0') return;
+      const ts = new Date(base.getTime() + i*r.interval*1000);
+      DATA.stepsIntraday.push({ts, date:r.date, value:+v});
+    });
+  }
+
+  // цель по шагам/калориям/дистанции, если есть
+  const users = q("SELECT goal_steps, goal_calorie, goal_distance FROM user LIMIT 1");
+  DATA.goal = users[0] || null;
+
+  // общий диапазон дат
+  const dates = [
+    ...DATA.steps.map(r=>r.date),
+    ...DATA.sleep.map(r=>r.date),
+    ...DATA.temp.map(r=>r.date),
+    ...DATA.spo2.map(r=>r.date)
+  ].filter(Boolean).sort();
+  RANGE.min = dates[0];
+  RANGE.max = dates[dates.length-1];
+}
+
+// ---------------------------------------------------------------------------
+// 3. Утилиты статистики
+// ---------------------------------------------------------------------------
+function stats(arr){
+  if(!arr.length) return {min:0, avg:0, max:0};
+  const min = Math.min(...arr), max = Math.max(...arr);
+  const avg = arr.reduce((a,b)=>a+b,0) / arr.length;
+  return {min, avg, max};
+}
+function fmt(n, d=0){ return isFinite(n) ? n.toLocaleString('ru-RU', {maximumFractionDigits:d, minimumFractionDigits:d}) : '—'; }
+
+// Часовой пояс ВАШЕГО ТЕЛЕФОНА (не этого компьютера!). В базе все unix_time хранятся
+// в UTC — полагаться на системный часовой пояс браузера нельзя (он может быть каким
+// угодно, например у этой Kali-машины стоит America/New_York, а телефон — в другом поясе).
+// Поэтому сдвиг применяется вручную и время читается через UTC-геттеры.
+function getTzOffsetHours(){
+  const el = document.getElementById('tzOffset');
+  const v = el ? parseFloat(el.value) : 5;
+  return isNaN(v) ? 5 : v;
+}
+function shiftForDisplay(date){ return new Date(date.getTime() + getTzOffsetHours()*3600000); }
+function pad2(n){ return String(n).padStart(2,'0'); }
+function fmtLocal(date){
+  if(!date) return '';
+  const s = shiftForDisplay(date);
+  return `${pad2(s.getUTCDate())}.${pad2(s.getUTCMonth()+1)}.${s.getUTCFullYear()}, ${pad2(s.getUTCHours())}:${pad2(s.getUTCMinutes())}:${pad2(s.getUTCSeconds())}`;
+}
+function fmtTimeOnly(date){
+  const s = shiftForDisplay(date);
+  return `${pad2(s.getUTCHours())}:${pad2(s.getUTCMinutes())}`;
+}
+function fmtDuration(totalSeconds){
+  const h = Math.floor(totalSeconds/3600);
+  const m = Math.round((totalSeconds%3600)/60);
+  return `${h} ч. ${pad2(m)} мин.`;
+}
+function inRange(dateStr, start, end){ return dateStr >= start && dateStr <= end; }
+
+// ---------------------------------------------------------------------------
+// 3б. Бакетирование данных в режиме "День" — 30 минут, если в базе реально есть
+// такая детализация, иначе 1 час (для SpO2/температуры/сна).
+// ---------------------------------------------------------------------------
+
+// Есть ли у точек детализация тоньше часа? Считаем число заполненных получасовых
+// интервалов и часовых — если получасовых больше, значит данные гуще часа.
+function pickBucketMinutes(timesMs, dayBaseMs){
+  if(!timesMs.length) return 60;
+  const hourSet = new Set(), halfSet = new Set();
+  timesMs.forEach(t=>{
+    const mins = Math.floor((t - dayBaseMs)/60000);
+    hourSet.add(Math.floor(mins/60));
+    halfSet.add(Math.floor(mins/30));
+  });
+  return halfSet.size > hourSet.size ? 30 : 60;
+}
+
+// Группирует точки {ts,value} в бакеты по bucketMin минут, усредняя значение внутри бакета.
+function bucketSeries(points, dayBaseMs, bucketMin){
+  const map = new Map();
+  points.forEach(p=>{
+    const mins = Math.floor((p.ts.getTime()-dayBaseMs)/60000);
+    const idx = Math.floor(mins/bucketMin);
+    if(!map.has(idx)) map.set(idx, []);
+    map.get(idx).push(p.value);
+  });
+  return [...map.entries()].sort((a,b)=>a[0]-b[0]).map(([idx,vals])=>({
+    x: dayBaseMs + idx*bucketMin*60000,
+    y: vals.reduce((a,b)=>a+b,0)/vals.length
+  }));
+}
+
+// Для гипнограммы сна: если среди сегментов есть короче 30 минут — данные детальнее
+// получаса, бакетируем по 30 мин, иначе по часу.
+function pickSleepBucketMinutes(segs){
+  return segs.some(s=>s.d < 30) ? 30 : 60;
+}
+
+// Линии-разметка времени для графиков. dayBaseMs/дата строятся так же, как и сами
+// точки данных (через dayStart()+смещение), поэтому подписи читаем как есть (UTC-геттеры),
+// без сдвига на часовой пояс телефона — иначе разметка "уедет" от самих точек.
+function hhmmUTC(date){ return `${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`; }
+function dayGridLines(dayBaseMs, bucketMin){
+  const lines = [];
+  for(let m=0; m<24*60; m+=bucketMin){
+    const t = dayBaseMs + m*60000;
+    lines.push({x:t, label: (m%60===0) ? hhmmUTC(new Date(t)) : null});
+  }
+  return lines;
+}
+function dayBoundaryGridLines(start, end){
+  const numDays = Math.round((new Date(end+'T00:00:00Z') - new Date(start+'T00:00:00Z'))/86400000) + 1;
+  // линия — на каждый день всегда, а подписи прореживаем, чтобы держать их число ~15
+  // (иначе на годовом диапазоне сотни подписей наложатся друг на друга)
+  const labelStep = Math.max(1, Math.ceil(numDays/15));
+  const lines = [];
+  let cur = start, i = 0;
+  while(cur <= end){
+    const d = new Date(cur+'T00:00:00Z');
+    lines.push({x:d.getTime(), label: (i % labelStep === 0) ? `${pad2(d.getUTCDate())}.${pad2(d.getUTCMonth()+1)}` : null});
+    cur = addDays(cur, 1); i++;
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// 4. Полукруглый гейдж (SVG)
+// ---------------------------------------------------------------------------
+function polar(cx, cy, r, angleDeg){
+  const rad = angleDeg * Math.PI / 180;
+  return {x: cx + r*Math.cos(rad), y: cy - r*Math.sin(rad)};
+}
+// Три вложенных полукольца одна над другой (референс: приложение QRing) —
+// rings передаются от внешнего к внутреннему: [{value,max,color}, ...]
+function tripleGaugeSVG(rings){
+  const cx=150, cy=150, rStart=128, gap=23, strokeW=17;
+  let s = '';
+  rings.forEach((ring, i)=>{
+    const r = rStart - i*gap;
+    const frac = ring.max > 0 ? Math.max(0, Math.min(1, ring.value/ring.max)) : 0;
+    const p0 = polar(cx,cy,r,180);
+    const bgEnd = polar(cx,cy,r,0);
+    const endAngle = 180 - frac*180;
+    const p1 = polar(cx,cy,r,endAngle);
+    // large-arc-flag должен быть 0: наша дуга-заливка никогда не превышает 180° (frac<=1),
+    // поэтому всегда нужна "короткая" дуга, а не "длинная" по остальной части окружности.
+    s += `<path d="M ${p0.x} ${p0.y} A ${r} ${r} 0 1 1 ${bgEnd.x} ${bgEnd.y}" fill="none" stroke="${ring.color}" stroke-width="${strokeW}" stroke-linecap="round" opacity="0.16"/>`;
+    if(frac > 0.001){
+      s += `<path d="M ${p0.x} ${p0.y} A ${r} ${r} 0 0 1 ${p1.x} ${p1.y}" fill="none" stroke="${ring.color}" stroke-width="${strokeW}" stroke-linecap="round"/>`;
+    }
+  });
+  return s; // вставляется как innerHTML в уже существующий <svg id="tripleGauge"> из разметки
+}
+
+// ---------------------------------------------------------------------------
+// 5. Линейные / столбчатые графики (SVG)
+// ---------------------------------------------------------------------------
+function lineChartSVG(points, opts){
+  const W = opts.width||600, H = opts.height||180, pad=30;
+  if(!points.length) return `<div class="empty">Нет данных за выбранный период</div>`;
+  const xs = points.map(p=>p.x), ys = points.map(p=>p.y);
+  const minX=Math.min(...xs), maxX=Math.max(...xs);
+  const minY = Math.min(0, ...ys), maxY = Math.max(...ys) * 1.1 || 1;
+  const sx = x => pad + (maxX>minX ? (x-minX)/(maxX-minX) : 0.5) * (W-2*pad);
+  const sy = y => H-pad - (maxY>minY ? (y-minY)/(maxY-minY) : 0) * (H-2*pad);
+  const path = points.map((p,i)=> (i===0?'M':'L') + sx(p.x) + ' ' + sy(p.y)).join(' ');
+  let dots = points.length < 60 ? points.map(p=>`<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="2.5" fill="${opts.color}"/>`).join('') : '';
+
+  // вертикальные линии-разметка времени: полчаса/час внутри дня, день внутри диапазона
+  let grid = '';
+  (opts.gridLines||[]).forEach(g=>{
+    if(g.x < minX || g.x > maxX) return;
+    const x = sx(g.x);
+    grid += `<line x1="${x}" y1="6" x2="${x}" y2="${H-pad}" stroke="${themeColor('border')}" stroke-width="1" stroke-dasharray="2,3" opacity="0.7"/>`;
+    if(g.label) grid += `<text x="${x}" y="${H-pad+13}" font-size="9" fill="${themeColor('muted')}" text-anchor="middle">${g.label}</text>`;
+  });
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">
+    ${grid}
+    <line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="${themeColor('border')}"/>
+    <path d="${path}" fill="none" stroke="${opts.color}" stroke-width="2.5"/>
+    ${dots}
+  </svg>`;
+}
+
+function stackedBarSVG(rows, opts){
+  const W = opts.width||600, H = opts.height||200, pad=30;
+  if(!rows.length) return `<div class="empty">Нет данных за выбранный период</div>`;
+  const maxTotal = Math.max(...rows.map(r=>r.segments.reduce((a,s)=>a+s.value,0))) || 1;
+  const bw = (W-2*pad)/rows.length;
+  let bars = '';
+  rows.forEach((r,i)=>{
+    let y = H-pad;
+    const x = pad + i*bw + bw*0.15;
+    const w = bw*0.7;
+    r.segments.forEach(seg=>{
+      const h = (seg.value/maxTotal) * (H-2*pad);
+      y -= h;
+      bars += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${seg.color}" rx="2"/>`;
+    });
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">
+    <line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="${themeColor('border')}"/>
+    ${bars}
+  </svg>`;
+}
+
+// гипнограмма (фазы сна за одну ночь) — линия роста/падения как в фитнес-трекерах
+function hypnogramSVG(segStart, segs, opts){
+  const W = opts.width||900, H = opts.height||160, pad=30;
+  if(!segs || !segs.length) return `<div class="empty">Нет детальных данных о фазах сна за эту ночь</div>`;
+  const levelOf = t => ({5:3, 4:2, 2:1, 3:0})[t] ?? 1; // awake=3, rem=2, light=1, deep=0
+  const colorOf = t => ({5:COLORS.awake, 4:COLORS.rem, 2:COLORS.light, 3:COLORS.deep})[t] || COLORS.light;
+  let totalMin = segs.reduce((a,s)=>a+s.d,0) || 1;
+  const sx = min => pad + (min/totalMin) * (W-2*pad);
+  const sy = level => H-pad - (level/3) * (H-2*pad);
+  let path = '', cum = 0, rects='';
+  // Рисуем ПОЛНУЮ детализацию сегментов (без округления/группировки) — иначе короткие
+  // 2-5-минутные пробуждения теряются при усреднении по получасовым/часовым бакетам.
+  segs.forEach((s,i)=>{
+    const x0 = sx(cum), x1 = sx(cum+s.d);
+    const y = sy(levelOf(s.t));
+    if(i===0) path += `M ${x0} ${y} `;
+    path += `L ${x1} ${y} `;
+    if(i < segs.length-1){
+      const yNext = sy(levelOf(segs[i+1].t));
+      path += `L ${x1} ${yNext} `;
+    }
+    rects += `<rect x="${x0}" y="${y-3}" width="${x1-x0}" height="6" fill="${colorOf(s.t)}" opacity="0.85"/>`;
+    cum += s.d;
+  });
+  // Сетка — независимый оверлей через каждые bucketMin минут от начала ночи,
+  // НЕ влияет на точность самих данных выше.
+  let grid = '';
+  const bucketMin = opts.bucketMin || 60;
+  for(let m=bucketMin; m<totalMin; m+=bucketMin){
+    const x = sx(m);
+    grid += `<line x1="${x}" y1="6" x2="${x}" y2="${H-pad}" stroke="${themeColor('border')}" stroke-width="1" stroke-dasharray="2,3" opacity="0.7"/>`;
+  }
+  const startDate = new Date(segStart*1000);
+  const endDate = new Date((segStart + totalMin*60)*1000);
+  return `<svg viewBox="0 0 ${W} ${H+20}" width="100%">
+    ${grid}
+    <path d="${path}" fill="none" stroke="${themeColor('muted')}" stroke-width="1" opacity="0.4"/>
+    ${rects}
+    <text x="${pad}" y="${H+15}" font-size="11" fill="${themeColor('muted')}">${fmtTimeOnly(startDate)}</text>
+    <text x="${W-pad}" y="${H+15}" font-size="11" fill="${themeColor('muted')}" text-anchor="end">${fmtTimeOnly(endDate)}</text>
+  </svg>`;
+}
+
+// ---------------------------------------------------------------------------
+// 6. Состояние фильтра и период
+// ---------------------------------------------------------------------------
+let STATE = {mode:'day', ref:null};
+
+function toISO(d){ return d.toISOString().slice(0,10); }
+function addDays(dateStr, n){ const d=new Date(dateStr+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+n); return toISO(d); }
+function addMonths(dateStr, n){ const d=new Date(dateStr+'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth()+n); return toISO(d); }
+function addYears(dateStr, n){ const d=new Date(dateStr+'T00:00:00Z'); d.setUTCFullYear(d.getUTCFullYear()+n); return toISO(d); }
+
+function computeWindow(){
+  if(STATE.mode === 'day'){
+    return {start:STATE.ref, end:STATE.ref, label: new Date(STATE.ref+'T00:00:00Z').toLocaleDateString('ru-RU',{day:'2-digit',month:'long',year:'numeric'})};
+  }
+  if(STATE.mode === 'month'){
+    const d = new Date(STATE.ref+'T00:00:00Z');
+    const start = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-01`;
+    const end = addDays(addMonths(start,1), -1);
+    return {start, end, label: d.toLocaleDateString('ru-RU',{month:'long',year:'numeric'})};
+  }
+  if(STATE.mode === 'year'){
+    const y = STATE.ref.slice(0,4);
+    return {start:`${y}-01-01`, end:`${y}-12-31`, label:y};
+  }
+  // custom
+  const s = document.getElementById('customStart').value;
+  const e = document.getElementById('customEnd').value;
+  return {start:s||RANGE.min, end:e||RANGE.max, label:`${s} — ${e}`};
+}
+
+function navigate(dir){
+  if(STATE.mode==='day') STATE.ref = addDays(STATE.ref, dir);
+  else if(STATE.mode==='month') STATE.ref = addMonths(STATE.ref, dir);
+  else if(STATE.mode==='year') STATE.ref = addYears(STATE.ref, dir);
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// 7. Рендер дашбордов
+// ---------------------------------------------------------------------------
+function render(){
+  const {start, end, label} = computeWindow();
+  document.getElementById('periodLabel').textContent = label;
+  document.getElementById('main').style.display = 'grid';
+
+  // --- Шаги / Дистанция / Калории (совмещённая диаграмма, референс — само приложение) ---
+  const stepsInRange = DATA.steps.filter(r=>inRange(r.date,start,end));
+  const stepsVals = stepsInRange.map(r=>r.steps);
+  const kmVals = stepsInRange.map(r=>r.distance/1000); // distance хранится в метрах
+  const calVals = stepsInRange.map(r=>r.calorie/1000);  // calorie хранится в милликкал
+
+  const sStep = stats(stepsVals), sKm = stats(kmVals), sCal = stats(calVals);
+  const goalSteps = (DATA.goal && DATA.goal.goal_steps) || Math.max(sStep.max*1.2, 8000);
+  const goalKm = (DATA.goal && DATA.goal.goal_distance) || Math.max(sKm.max*1.2, 4);
+  const goalCal = (DATA.goal && DATA.goal.goal_calorie) || Math.max(sCal.max*1.2, 200);
+
+  document.getElementById('tripleGauge').innerHTML = tripleGaugeSVG([
+    {value:sCal.avg, max:goalCal, color:COLORS.cal},
+    {value:sKm.avg,  max:goalKm,  color:COLORS.miles},
+    {value:sStep.avg,max:goalSteps, color:COLORS.steps}
+  ]);
+
+  document.getElementById('valSteps').textContent = fmt(sStep.avg);
+  document.getElementById('goalSteps').textContent = `/ ${fmt(goalSteps)} шагов`;
+  document.getElementById('valKm').textContent = fmt(sKm.avg, 2);
+  document.getElementById('goalKm').textContent = `/ ${fmt(goalKm,2)} км`;
+  document.getElementById('valCal').textContent = fmt(sCal.avg);
+  document.getElementById('goalCal').textContent = `/ ${fmt(goalCal)} ккал`;
+
+  document.getElementById('statSteps').innerHTML = `мин ${fmt(sStep.min)} · сред ${fmt(sStep.avg)} · макс ${fmt(sStep.max)}`;
+  document.getElementById('statMiles').innerHTML = `мин ${fmt(sKm.min,2)} · сред ${fmt(sKm.avg,2)} · макс ${fmt(sKm.max,2)}`;
+  document.getElementById('statCal').innerHTML = `мин ${fmt(sCal.min)} · сред ${fmt(sCal.avg)} · макс ${fmt(sCal.max)}`;
+
+  // --- Сон ---
+  const sleepInRange = DATA.sleep.filter(r=>inRange(r.date,start,end));
+  const totalSleepVals = sleepInRange.map(r=>r.total_sleep); // в секундах, для fmtDuration
+  const sSleep = stats(totalSleepVals);
+  document.getElementById('statSleep').innerHTML = `<div>Мин<br><b>${fmtDuration(sSleep.min)}</b></div><div>Сред<br><b>${fmtDuration(sSleep.avg)}</b></div><div>Макс<br><b>${fmtDuration(sSleep.max)}</b></div>`;
+
+  const sleepWrap = document.getElementById('sleepChartWrap');
+  if(STATE.mode === 'day'){
+    const seg = DATA.sleepSegByDate[start];
+    if(seg){
+      const bucketMin = pickSleepBucketMinutes(seg.segs);
+      sleepWrap.innerHTML = hypnogramSVG(seg.st, seg.segs, {bucketMin})
+        + `<div style="font-size:11px;color:${themeColor('muted')};text-align:right;">шаг сетки: ${bucketMin===30?'30 мин':'1 час'} (данные показаны без огрубления)</div>`;
+    } else {
+      sleepWrap.innerHTML = `<div class="empty">Нет детальных данных о фазах сна за эту ночь</div>`;
+    }
+  } else {
+    const rows = sleepInRange.map(r=>({
+      label:r.date,
+      segments:[
+        {value:r.deep_sleep, color:COLORS.deep},
+        {value:r.light_sleep, color:COLORS.light},
+        {value:r.rapid_sleep, color:COLORS.rem},
+        {value:r.awake, color:COLORS.awake}
+      ]
+    }));
+    sleepWrap.innerHTML = stackedBarSVG(rows, {});
+  }
+
+  // --- SpO2 ---
+  const spo2InRange = DATA.spo2.filter(r=>inRange(r.date,start,end));
+  const spo2Vals = spo2InRange.map(r=>r.value);
+  const sSpo2 = stats(spo2Vals);
+  document.getElementById('statSpo2').innerHTML = `<div>Мин<br><b>${fmt(sSpo2.min)}%</b></div><div>Сред<br><b>${fmt(sSpo2.avg,1)}%</b></div><div>Макс<br><b>${fmt(sSpo2.max)}%</b></div>`;
+  const spo2Wrap = document.getElementById('spo2ChartWrap');
+  if(STATE.mode === 'day'){
+    const dayBaseMs = dayStart(start).getTime();
+    const bucketMin = pickBucketMinutes(spo2InRange.map(r=>r.ts.getTime()), dayBaseMs);
+    const pts = bucketSeries(spo2InRange.map(r=>({ts:r.ts, value:r.value})), dayBaseMs, bucketMin);
+    spo2Wrap.innerHTML = lineChartSVG(pts, {color:COLORS.spo2, gridLines:dayGridLines(dayBaseMs, bucketMin)})
+      + `<div style="font-size:11px;color:${themeColor('muted')};text-align:right;">шаг: ${bucketMin===30?'30 мин':'1 час'}</div>`;
+  } else {
+    const byDate = {};
+    spo2InRange.forEach(r=>{ (byDate[r.date] ||= []).push(r.value); });
+    const pts = Object.keys(byDate).sort().map(d=>({x:new Date(d).getTime(), y: byDate[d].reduce((a,b)=>a+b,0)/byDate[d].length}));
+    spo2Wrap.innerHTML = lineChartSVG(pts, {color:COLORS.spo2, gridLines:dayBoundaryGridLines(start,end)});
+  }
+
+  // --- Температура ---
+  const tempInRange = DATA.temp.filter(r=>inRange(r.date,start,end));
+  const tempVals = tempInRange.map(r=>r.value);
+  const sTemp = stats(tempVals);
+  document.getElementById('statTemp').innerHTML = `<div>Мин<br><b>${fmt(sTemp.min,1)}°C</b></div><div>Сред<br><b>${fmt(sTemp.avg,1)}°C</b></div><div>Макс<br><b>${fmt(sTemp.max,1)}°C</b></div>`;
+  const tempWrap = document.getElementById('tempChartWrap');
+  if(STATE.mode === 'day'){
+    const dayBaseMs = dayStart(start).getTime();
+    const bucketMin = pickBucketMinutes(tempInRange.map(r=>r.ts.getTime()), dayBaseMs);
+    const pts = bucketSeries(tempInRange.map(r=>({ts:r.ts, value:r.value})), dayBaseMs, bucketMin);
+    tempWrap.innerHTML = lineChartSVG(pts, {color:COLORS.temp, gridLines:dayGridLines(dayBaseMs, bucketMin)})
+      + `<div style="font-size:11px;color:${themeColor('muted')};text-align:right;">шаг: ${bucketMin===30?'30 мин':'1 час'}</div>`;
+  } else {
+    const byDate = {};
+    tempInRange.forEach(r=>{ (byDate[r.date] ||= []).push(r.value); });
+    const pts = Object.keys(byDate).sort().map(d=>({x:new Date(d).getTime(), y: byDate[d].reduce((a,b)=>a+b,0)/byDate[d].length}));
+    tempWrap.innerHTML = lineChartSVG(pts, {color:COLORS.temp, gridLines:dayBoundaryGridLines(start,end)});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. Инициализация UI после загрузки файла
+// ---------------------------------------------------------------------------
+function setMode(mode){
+  STATE.mode = mode;
+  if(mode !== 'custom') STATE.ref = RANGE.max;
+  document.querySelectorAll('#filterBar .btn[data-mode]').forEach(b=>b.classList.toggle('active', b.dataset.mode===mode));
+  render();
+}
+
+document.querySelectorAll('#filterBar .btn[data-mode]').forEach(b=>{
+  b.addEventListener('click', ()=> setMode(b.dataset.mode));
+});
+document.getElementById('applyCustom').addEventListener('click', ()=>{
+  STATE.mode = 'custom';
+  document.querySelectorAll('#filterBar .btn[data-mode]').forEach(b=>b.classList.remove('active'));
+  render();
+});
+document.getElementById('prevBtn').addEventListener('click', ()=> navigate(-1));
+document.getElementById('nextBtn').addEventListener('click', ()=> navigate(1));
+
+document.getElementById('themeToggle').addEventListener('click', ()=>{
+  const next = isDarkTheme() ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('qring-theme', next);
+  if(DB) render(); // перерисовать SVG-графики новыми цветами темы
+});
+
+document.getElementById('tzOffset').addEventListener('change', ()=>{
+  if(DB) render(); // обновить подписи времени на гипнограмме с новым часовым поясом
+});
+document.getElementById('tzMinus').addEventListener('click', ()=>{
+  const el = document.getElementById('tzOffset');
+  el.value = (parseFloat(el.value)||0) - 1;
+  el.dispatchEvent(new Event('change'));
+});
+document.getElementById('tzPlus').addEventListener('click', ()=>{
+  const el = document.getElementById('tzOffset');
+  el.value = (parseFloat(el.value)||0) + 1;
+  el.dispatchEvent(new Event('change'));
+});
+
+function showError(msg){
+  document.getElementById('err').textContent = msg;
+}
+
+// ---------------------------------------------------------------------------
+// 9. Экспорт данных за выбранный период в один Excel-файл (лист на каждый тип данных)
+// ---------------------------------------------------------------------------
+function exportToExcel(){
+  if(!DB) return;
+  const {start, end} = computeWindow();
+  const wb = XLSX.utils.book_new();
+
+  const stepsSheet = DATA.steps.filter(r=>inRange(r.date,start,end)).map(r=>({
+    'Дата': r.date, 'Шаги': r.steps,
+    'Дистанция_км': +(r.distance/1000).toFixed(3),
+    'Калории_ккал': +(r.calorie/1000).toFixed(1)
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(stepsSheet), 'Шаги (по дням)');
+
+  const stepsIntradaySheet = DATA.stepsIntraday.filter(r=>inRange(r.date,start,end)).map(r=>({
+    'Время': fmtLocal(r.ts), 'Дата': r.date, 'Шаги': r.value
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(stepsIntradaySheet), 'Шаги (внутри дня)');
+
+  // Важно: date_str в sleep_total — это дата ПРОБУЖДЕНИЯ (утро), а не дата засыпания.
+  // Например, сон с вечера 27-го до утра 28-го хранится под датой "2026-07-28".
+  const sleepSheet = DATA.sleep.filter(r=>inRange(r.date,start,end)).map(r=>({
+    'Дата (пробуждения)': r.date,
+    'Общий сон': fmtDuration(r.total_sleep),
+    'Глубокий': fmtDuration(r.deep_sleep),
+    'Лёгкий': fmtDuration(r.light_sleep),
+    'REM': fmtDuration(r.rapid_sleep),
+    'Пробуждения': fmtDuration(r.awake),
+    'Начало сна (локальное время)': r.start_time ? fmtLocal(new Date(r.start_time*1000)) : '',
+    'Конец сна (локальное время)': r.end_time ? fmtLocal(new Date(r.end_time*1000)) : '',
+    'Средний пульс': r.avg_heart, 'Средний SpO2': r.avg_blood_oxygen, 'Средний HRV': r.avg_hrv
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sleepSheet), 'Сон (по дням)');
+
+  const heartSheet = DATA.heart.filter(r=>inRange(r.date,start,end)).map(r=>({'Время': fmtLocal(r.ts), 'Дата': r.date, 'Пульс, уд/мин': r.value}));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(heartSheet), 'Пульс');
+
+  const spo2Sheet = DATA.spo2.filter(r=>inRange(r.date,start,end)).map(r=>({'Время': fmtLocal(r.ts), 'Дата': r.date, 'SpO2, %': r.value}));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(spo2Sheet), 'Кислород в крови');
+
+  const hrvSheet = DATA.hrv.filter(r=>inRange(r.date,start,end)).map(r=>({'Время': fmtLocal(r.ts), 'Дата': r.date, 'HRV, мс': r.value}));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hrvSheet), 'HRV');
+
+  const tempSheet = DATA.temp.filter(r=>inRange(r.date,start,end)).map(r=>({'Время': fmtLocal(r.ts), 'Дата': r.date, 'Температура, C': r.value}));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tempSheet), 'Температура');
+
+  XLSX.writeFile(wb, `qring_export_${start}_${end}.xlsx`);
+}
+document.getElementById('exportBtn').addEventListener('click', exportToExcel);
+
+document.getElementById('fileInput').addEventListener('change', async (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  document.getElementById('err').textContent = '';
+  document.getElementById('status').textContent = 'Обработка файла…';
+  try{
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const tarBytes = stripBackupHeader(buf);
+    const files = parseTar(tarBytes);
+    let dbKey = Object.keys(files).find(k => k.endsWith('db/qc_database.db'));
+    if(!dbKey) dbKey = Object.keys(files).find(k => k.endsWith('.db') && k.includes('qc_database'));
+    if(!dbKey) throw new Error('Внутри бэкапа не найдена база qc_database.db. Убедитесь, что это бэкап именно приложения QRing (com.app.cq.ring).');
+
+    const SQL = await initSqlJs({ locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/${f}` });
+    DB = new SQL.Database(files[dbKey]);
+
+    loadAllData();
+
+    if(!RANGE.min){
+      throw new Error('База открыта, но данных по метрикам не найдено.');
+    }
+
+    document.getElementById('status').textContent = `Загружено: ${file.name}`;
+    document.getElementById('rangeInfo').style.display = 'block';
+    document.getElementById('rangeInfo').textContent = `Данные доступны: с ${RANGE.min} по ${RANGE.max}`;
+    document.getElementById('customStart').value = RANGE.min;
+    document.getElementById('customEnd').value = RANGE.max;
+    document.getElementById('filterBar').style.display = 'flex';
+    document.getElementById('exportBtn').style.display = 'inline-block';
+
+    setMode('day');
+  }catch(err){
+    console.error(err);
+    showError('Ошибка: ' + err.message);
+    document.getElementById('status').textContent = 'Не удалось обработать файл';
+  }
+});
+</script>
+</body>
+</html>
